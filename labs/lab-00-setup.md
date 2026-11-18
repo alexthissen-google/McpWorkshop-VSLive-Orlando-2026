@@ -9,12 +9,20 @@ by PostgreSQL, and an agent in Azure waiting for the MCP server you are about to
 
 ## Start your Codespace
 
-1. Open the workshop repository on GitHub (your proctors will share the link).
-2. Click the green **Code** button, select the **Codespaces** tab, and click
-   **Create codespace on main**.
+<!-- Authors: this link names the event's repository. Update it for every new event. -->
+1. Open **[Create your workshop Codespace](https://codespaces.new/loekd-consultancy/McpWorkshop-VSLive-Orlando-2026?quickstart=1&devcontainer_path=.devcontainer%2Fcodespaces%2Fdevcontainer.json&machine=standardLinux32gb&location=EastUs)**
+   and sign in to GitHub if asked. The link selects the workshop's dev container, a 4-core
+   machine and the US East region for you.
+2. Click the green button to create the Codespace. If you already created one with this
+   link, GitHub offers to resume that one instead; do that.
 3. Wait for the Codespace to finish building. The first start can take a few minutes; you
    will know it is done when Visual Studio Code opens in your browser and the terminal
    prompt appears.
+
+> Note: if the link does not work for you, open the workshop repository on GitHub, click the
+> green **Code** button, select the **Codespaces** tab, open the **…** menu and choose
+> **New with options…**. Pick the dev container configuration **MCP Workshop (Codespaces)**,
+> region **US East** and the **4-core** machine type.
 
 > Note: if you prefer working in your local VS Code, you can also open the Codespace from
 > the desktop app (`Codespaces: Connect to Codespace` in the command palette). Everything in
