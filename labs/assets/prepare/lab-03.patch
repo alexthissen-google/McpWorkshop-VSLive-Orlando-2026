@@ -1,0 +1,131 @@
+diff --git a/src/TravelBooking.MCP/McpTelemetry.cs b/src/TravelBooking.MCP/McpTelemetry.cs
+new file mode 100644
+index 0000000..2128189
+--- /dev/null
++++ b/src/TravelBooking.MCP/McpTelemetry.cs
+@@ -0,0 +1,25 @@
++using System.Diagnostics;
++using System.Diagnostics.Metrics;
++
++namespace TravelBooking.MCP;
++
++public static class McpTelemetry
++{
++    public const string SourceName = "TravelBooking.Mcp";
++
++    public static readonly ActivitySource ActivitySource = new(SourceName);
++
++    public static readonly Meter Meter = new(SourceName);
++
++    public static readonly Counter<long> SeatsHeld =
++        Meter.CreateCounter<long>("travelbooking.seats_held",
++            description: "Number of seat holds placed via MCP tools.");
++
++    public static readonly Counter<long> BookingsConfirmed =
++        Meter.CreateCounter<long>("travelbooking.bookings_confirmed",
++            description: "Number of bookings confirmed via MCP tools.");
++
++    public static readonly Counter<long> BookingsCancelled =
++        Meter.CreateCounter<long>("travelbooking.bookings_cancelled",
++            description: "Number of bookings cancelled via MCP tools.");
++}
+diff --git a/src/TravelBooking.MCP/Tools/BookingTools.cs b/src/TravelBooking.MCP/Tools/BookingTools.cs
+index d99b7a4..60f1a02 100644
+--- a/src/TravelBooking.MCP/Tools/BookingTools.cs
++++ b/src/TravelBooking.MCP/Tools/BookingTools.cs
+@@ -1,4 +1,5 @@
+ using System.ComponentModel;
++using System.Diagnostics;
+ using Microsoft.Extensions.Logging;
+ using ModelContextProtocol;
+ using ModelContextProtocol.Server;
+@@ -25,12 +26,23 @@ public class BookingTools(
+             "seats returned by GetFlightDetails.")] string seatNumber,
+         CancellationToken cancellationToken)
+     {
++        using var activity = McpTelemetry.ActivitySource.StartActivity("tool HoldSeat");
++        activity?.SetTag("gen_ai.operation.name", "execute_tool");
++        activity?.SetTag("gen_ai.tool.name", "HoldSeat");
++        activity?.SetTag("travelbooking.flight_id", flightId);
++        activity?.SetTag("travelbooking.seat_number", seatNumber);
++
+         try
+         {
+-            return await holdSeat.HandleAsync(flightId, seatNumber, userId: null, cancellationToken);
++            var hold = await holdSeat.HandleAsync(flightId, seatNumber, userId: null, cancellationToken);
++            activity?.SetTag("travelbooking.hold_id", hold.HoldId);
++            activity?.SetTag("travelbooking.hold_expires_at", hold.ExpiresAtUtc.ToString("o"));
++            McpTelemetry.SeatsHeld.Add(1);
++            return hold;
+         }
+         catch (BookingDomainException ex)
+         {
++            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+             logger.LogWarning(ex, "HoldSeat failed for flight {FlightId}, seat {SeatNumber}: {Reason}",
+                 flightId, seatNumber, ex.Message);
+             throw new McpException(ex.Message);
+@@ -44,15 +56,22 @@ public class BookingTools(
+         [Description("The hold id returned by HoldSeat.")] Guid holdId,
+         CancellationToken cancellationToken)
+     {
++        using var activity = McpTelemetry.ActivitySource.StartActivity("tool ConfirmBooking");
++        activity?.SetTag("gen_ai.operation.name", "execute_tool");
++        activity?.SetTag("gen_ai.tool.name", "ConfirmBooking");
++        activity?.SetTag("travelbooking.hold_id", holdId);
++
+         try
+         {
+             var booking = await confirmBooking.HandleAsync(holdId, userId: null, cancellationToken);
++            McpTelemetry.BookingsConfirmed.Add(1);
+             logger.LogInformation("Booking {BookingReference} confirmed for hold {HoldId}",
+                 booking.BookingReference, holdId);
+             return booking;
+         }
+         catch (BookingDomainException ex)
+         {
++            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+             logger.LogWarning(ex, "ConfirmBooking failed for hold {HoldId}: {Reason}",
+                 holdId, ex.Message);
+             throw new McpException(ex.Message);
+@@ -76,12 +95,20 @@ public class BookingTools(
+         [Description("The booking id returned by ConfirmBooking.")] Guid bookingId,
+         CancellationToken cancellationToken)
+     {
++        using var activity = McpTelemetry.ActivitySource.StartActivity("tool CancelBooking");
++        activity?.SetTag("gen_ai.operation.name", "execute_tool");
++        activity?.SetTag("gen_ai.tool.name", "CancelBooking");
++        activity?.SetTag("travelbooking.booking_id", bookingId);
++
+         try
+         {
+-            return await cancelBooking.HandleAsync(bookingId, userId: null, cancellationToken);
++            var booking = await cancelBooking.HandleAsync(bookingId, userId: null, cancellationToken);
++            McpTelemetry.BookingsCancelled.Add(1);
++            return booking;
+         }
+         catch (BookingDomainException ex)
+         {
++            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+             logger.LogWarning(ex, "CancelBooking failed for booking {BookingId}: {Reason}",
+                 bookingId, ex.Message);
+             throw new McpException(ex.Message);
+diff --git a/src/aspire/TravelBooking.ServiceDefaults/Extensions.cs b/src/aspire/TravelBooking.ServiceDefaults/Extensions.cs
+index e3b1d6d..62b259c 100644
+--- a/src/aspire/TravelBooking.ServiceDefaults/Extensions.cs
++++ b/src/aspire/TravelBooking.ServiceDefaults/Extensions.cs
+@@ -58,11 +58,14 @@ public static class Extensions
+             {
+                 metrics.AddAspNetCoreInstrumentation()
+                     .AddHttpClientInstrumentation()
+-                    .AddRuntimeInstrumentation();
++                    .AddRuntimeInstrumentation()
++                    .AddMeter("TravelBooking.Mcp");
+             })
+             .WithTracing(tracing =>
+             {
+                 tracing.AddSource(builder.Environment.ApplicationName)
++                    .AddSource("TravelBooking.Mcp")
++                    .AddSource("Experimental.ModelContextProtocol")
+                     .AddAspNetCoreInstrumentation(tracing =>
+                         // Exclude health check requests from tracing
+                         tracing.Filter = context =>

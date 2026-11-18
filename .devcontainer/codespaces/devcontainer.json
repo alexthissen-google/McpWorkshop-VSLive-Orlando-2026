@@ -1,0 +1,71 @@
+{
+  "name": "MCP Workshop (Codespaces)",
+  "image": "mcr.microsoft.com/devcontainers/dotnet:2-11.0-resolute",
+  "features": {
+    "ghcr.io/devcontainers/features/azure-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": { "version": "lts" },
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/docker-in-docker": {
+      "moby": false
+    },
+    "./local-features/devproxy": {
+      "version": "3.3.1"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.azurecli",
+        "ms-vscode.powershell",
+        "ms-dotnettools.csharp@prerelease",
+        "ms-dotnettools.csdevkit@prerelease",
+        "microsoft-aspire.aspire-vscode",
+        "github.copilot",
+        "github.copilot-chat",
+        "github.codespaces",
+        "ms-azuretools.vscode-containers",
+        "ms-azuretools.vscode-bicep",
+        "ms-azuretools.vscode-azurecontainerapps"
+      ],
+      "settings": {
+        "dotnet.preferVisualStudioCodeFileSystemWatcher": true
+      },
+      "mcp": {
+        "servers": {
+          "microsoftdocs/mcp": {
+              "type": "http",
+              "url": "https://learn.microsoft.com/api/mcp"
+          }
+      },
+      "inputs": []
+      }
+    }
+  },
+  "containerEnv": {
+    "WORKSPACE_ROOT" : "${containerWorkspaceFolder}",
+    "SSL_CERT_DIR": "/home/vscode/.aspnet/dev-certs/trust:/usr/lib/ssl/certs"
+	},
+  "remoteEnv": {
+    "ALLOWED_ORIGINS": "https://${containerEnv:CODESPACE_NAME}-6274.${containerEnv:GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN},https://localhost:6274,http://localhost:6274,https://127.0.0.1:6274,http://127.0.0.1:6274"
+  },
+
+  "forwardPorts": [5000, 5001, 5197, 6274, 15095],
+  "portsAttributes": {
+    "5001": { "label": "IdentityServer (Lab 5)" },
+    "6274": { "label": "MCP Inspector (Lab 1+)" },
+    "5197": { "label": "Travel Booking Host (REST + /mcp)" },
+    "15095": { "label": "Aspire dashboard" },
+    "8000": { "label": "Dev Proxy (Lab 4, local only)", "onAutoForward": "silent" },
+    "8897": { "label": "Dev Proxy API (Lab 4, local only)", "onAutoForward": "silent" }
+  },
+
+  "onCreateCommand": "dotnet dev-certs https --trust --verbose",
+  "postCreateCommand": {
+    "post": "sh .devcontainer/codespaces/post-create.sh",
+    "dotnet": "dotnet --info"
+  },
+  "postStartCommand": "gh codespace ports visibility 5197:public 5001:public 15095:public -c \"$CODESPACE_NAME\"",
+
+  "remoteUser": "vscode",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}"
+}

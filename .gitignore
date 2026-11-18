@@ -1,0 +1,36 @@
+# .NET
+bin/
+obj/
+*.user
+.vs/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+
+*.lscache
+
+# Identity Server
+tempkey.jwk
+src/TravelBooking.IdentityServer/keys/*
+
+# Rider / VS Code local
+.idea/
+*.DotSettings.user
+
+# Secrets & local config
+appsettings.*.local.json
+*.env
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tooling output
+*.trx
+TestResults/
+.devproxy/
+.tmp/
+.azure
+azure.yaml
+next-steps.md

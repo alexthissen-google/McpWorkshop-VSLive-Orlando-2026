@@ -1,0 +1,168 @@
+diff --git a/src/TravelBooking.Host/Program.cs b/src/TravelBooking.Host/Program.cs
+index 4c4db75..ef0356b 100644
+--- a/src/TravelBooking.Host/Program.cs
++++ b/src/TravelBooking.Host/Program.cs
+@@ -1,8 +1,10 @@
++using ModelContextProtocol.AspNetCore;
+ using TravelBooking.API.Errors;
+ using TravelBooking.Application;
+ using TravelBooking.Host;
+ using TravelBooking.Infrastructure;
+ using TravelBooking.Infrastructure.Data;
++using TravelBooking.MCP.Tools;
+ 
+ var builder = WebApplication.CreateBuilder(args);
+ 
+@@ -19,10 +21,30 @@ builder.Services.AddProblemDetails();
+ 
+ builder.Services.AddOpenApi();
+ 
++builder.Services.AddCors(options =>
++{
++    options.AddDefaultPolicy(policy =>
++    {
++        policy.AllowAnyOrigin()
++              .AllowAnyHeader()
++              .AllowAnyMethod();
++    });
++});
++
++builder.Services.AddMcpServer()
++    .WithHttpTransport(options =>
++        options.SessionMode = HttpServerSessionMode.StatefulForInitializeClients)
++    .WithToolsFromAssembly(typeof(FlightTools).Assembly)
++    .WithResourcesFromAssembly(typeof(FlightTools).Assembly)
++    .WithPromptsFromAssembly(typeof(FlightTools).Assembly);
++
+ var app = builder.Build();
+ 
+ app.UseExceptionHandler();
+ 
++app.UseCors();
++app.MapMcp("/mcp");
++
+ app.MapTravelBookingEndpoints();
+ 
+ await app.MigrateAndSeedAsync();
+diff --git a/src/TravelBooking.MCP/Tools/BookingTools.cs b/src/TravelBooking.MCP/Tools/BookingTools.cs
+new file mode 100644
+index 0000000..8799afe
+--- /dev/null
++++ b/src/TravelBooking.MCP/Tools/BookingTools.cs
+@@ -0,0 +1,56 @@
++using System.ComponentModel;
++using ModelContextProtocol.Server;
++using TravelBooking.Application.Handlers;
++
++namespace TravelBooking.MCP.Tools;
++
++[McpServerToolType]
++public class BookingTools(
++    HoldSeatHandler holdSeat,
++    ConfirmBookingHandler confirmBooking,
++    GetBookingHandler getBooking,
++    CancelBookingHandler cancelBooking)
++{
++    [McpServerTool(Name = "HoldSeat")]
++    [Description("Places a temporary hold on a specific seat of a flight. The hold expires " +
++        "after a few minutes; confirm it with ConfirmBooking before it expires. " +
++        "Returns the hold id and the exact UTC expiration time.")]
++    public async Task<HoldResult> HoldSeatAsync(
++        [Description("The flight id returned by SearchFlights.")] Guid flightId,
++        [Description("The seat number to hold, e.g. '12A'. Must be one of the available " +
++            "seats returned by GetFlightDetails.")] string seatNumber,
++        CancellationToken cancellationToken)
++    {
++        return await holdSeat.HandleAsync(flightId, seatNumber, userId: null, cancellationToken);
++    }
++
++    [McpServerTool(Name = "ConfirmBooking")]
++    [Description("Confirms a seat hold and turns it into a booking. Fails if the hold has " +
++        "already expired. Returns the booking with its booking reference.")]
++    public async Task<BookingResult> ConfirmBookingAsync(
++        [Description("The hold id returned by HoldSeat.")] Guid holdId,
++        CancellationToken cancellationToken)
++    {
++        return await confirmBooking.HandleAsync(holdId, userId: null, cancellationToken);
++    }
++
++    [McpServerTool(Name = "GetBooking")]
++    [Description("Gets a booking by its id, including its status (Confirmed or Cancelled), " +
++        "seat number and booking reference.")]
++    public async Task<BookingResult?> GetBookingAsync(
++        [Description("The booking id returned by ConfirmBooking.")] Guid bookingId,
++        CancellationToken cancellationToken)
++    {
++        return await getBooking.HandleAsync(bookingId, cancellationToken);
++    }
++
++    [McpServerTool(Name = "CancelBooking")]
++    [Description("Cancels an existing booking, freeing up its seat. Returns the cancelled " +
++        "booking. Fails if the booking is already cancelled.")]
++    public async Task<BookingResult> CancelBookingAsync(
++        [Description("The booking id returned by ConfirmBooking.")] Guid bookingId,
++        CancellationToken cancellationToken)
++    {
++        return await cancelBooking.HandleAsync(bookingId, userId: null, cancellationToken);
++    }
++}
+diff --git a/src/TravelBooking.MCP/Tools/FlightTools.cs b/src/TravelBooking.MCP/Tools/FlightTools.cs
+new file mode 100644
+index 0000000..b9038ce
+--- /dev/null
++++ b/src/TravelBooking.MCP/Tools/FlightTools.cs
+@@ -0,0 +1,35 @@
++using System.ComponentModel;
++using ModelContextProtocol.Server;
++using TravelBooking.Application.Handlers;
++
++namespace TravelBooking.MCP.Tools;
++
++[McpServerToolType]
++public class FlightTools(
++    SearchFlightsHandler searchFlights,
++    GetFlightDetailsHandler getFlightDetails)
++{
++    [McpServerTool(Name = "SearchFlights")]
++    [Description("Searches for direct flights between two airports on a specific date. " +
++        "Returns a list of flights with id, flight code, airline, departure/arrival times (UTC), " +
++        "price in USD, and the number of available seats. " +
++        "Use the returned flight id with GetFlightDetails or HoldSeat.")]
++    public async Task<IReadOnlyList<FlightSummary>> SearchFlightsAsync(
++        [Description("IATA code of the departure airport, e.g. 'AMS'.")] string from,
++        [Description("IATA code of the arrival airport, e.g. 'LHR'.")] string to,
++        [Description("Travel date in YYYY-MM-DD format.")] DateOnly date,
++        CancellationToken cancellationToken)
++    {
++        return await searchFlights.HandleAsync(from, to, date, cancellationToken);
++    }
++
++    [McpServerTool(Name = "GetFlightDetails")]
++    [Description("Gets full details for a single flight by its id, including the list of " +
++        "available seat numbers. Use this to pick a seat before calling HoldSeat.")]
++    public async Task<FlightDetails?> GetFlightDetailsAsync(
++        [Description("The flight id returned by SearchFlights.")] Guid flightId,
++        CancellationToken cancellationToken)
++    {
++        return await getFlightDetails.HandleAsync(flightId, cancellationToken);
++    }
++}
+diff --git a/src/tests/TravelBooking.Tests/Mcp/McpServerPrimitivesTests.cs b/src/tests/TravelBooking.Tests/Mcp/McpServerPrimitivesTests.cs
+index 2b2209c..9dc63ad 100644
+--- a/src/tests/TravelBooking.Tests/Mcp/McpServerPrimitivesTests.cs
++++ b/src/tests/TravelBooking.Tests/Mcp/McpServerPrimitivesTests.cs
+@@ -121,4 +121,14 @@ public class McpServerPrimitivesTests
+         bookings.VerifyNoOtherCalls();
+         audit.VerifyNoOtherCalls();
+     }
++
++    [Fact]
++    public async Task ListTools_still_advertises_the_six_booking_tools()
++    {
++        await using var mcp = await InProcessMcp.StartAsync();
++        var tools = await mcp.Client.ListToolsAsync(cancellationToken: TestContext.Current.CancellationToken);
++
++        tools.Select(t => t.Name).Should().BeEquivalentTo(
++            "SearchFlights", "GetFlightDetails", "HoldSeat", "ConfirmBooking", "GetBooking", "CancelBooking");
++    }
+ }

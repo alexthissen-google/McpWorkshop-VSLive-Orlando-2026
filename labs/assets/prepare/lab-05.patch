@@ -1,0 +1,589 @@
+diff --git a/Directory.Packages.props b/Directory.Packages.props
+index 9cfb451..d8d33af 100644
+--- a/Directory.Packages.props
++++ b/Directory.Packages.props
+@@ -41,6 +41,7 @@
+ 
+   <ItemGroup Label="Authentication">
+     <PackageVersion Include="Duende.IdentityServer" Version="8.0.10" />
++    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="$(AspnetVersion)" />
+     <PackageVersion Include="Microsoft.AspNetCore.Authorization" Version="$(AspnetVersion)" />
+   </ItemGroup>
+ 
+diff --git a/src/TravelBooking.API/Authorization/ScopeClaims.cs b/src/TravelBooking.API/Authorization/ScopeClaims.cs
+new file mode 100644
+index 0000000..121f191
+--- /dev/null
++++ b/src/TravelBooking.API/Authorization/ScopeClaims.cs
+@@ -0,0 +1,16 @@
++using System.Security.Claims;
++
++namespace TravelBooking.API.Authorization;
++
++public static class ScopeClaims
++{
++    /// <summary>
++    /// True when the caller's token grants <paramref name="scope"/>. A JWT carries its scopes
++    /// either as a JSON array, which the bearer handler turns into one <c>scope</c> claim per
++    /// scope, or as a single space-delimited claim. Look at all of them, in either shape.
++    /// </summary>
++    public static bool HasScope(this ClaimsPrincipal user, string scope) =>
++        user.FindAll("scope")
++            .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
++            .Contains(scope, StringComparer.Ordinal);
++}
+diff --git a/src/TravelBooking.API/Endpoints/BookingEndpoints.cs b/src/TravelBooking.API/Endpoints/BookingEndpoints.cs
+index a714e83..99116ad 100644
+--- a/src/TravelBooking.API/Endpoints/BookingEndpoints.cs
++++ b/src/TravelBooking.API/Endpoints/BookingEndpoints.cs
+@@ -14,7 +14,7 @@ public static class BookingEndpoints
+ 
+     public static IEndpointRouteBuilder MapBookingEndpoints(this IEndpointRouteBuilder app)
+     {
+-        var group = app.MapGroup("/bookings").WithTags("Bookings");
++        var group = app.MapGroup("/bookings").WithTags("Bookings").RequireAuthorization();
+ 
+         group.MapPost("/hold", async (
+             HoldSeatRequest request,
+@@ -24,7 +24,8 @@ public static class BookingEndpoints
+         {
+             var hold = await handler.HandleAsync(request.FlightId, request.SeatNumber, user.GetUserId(), ct);
+             return Results.Ok(hold);
+-        });
++        })
++        .RequireAuthorization(CanBookPolicy);
+ 
+         group.MapPost("/confirm", async (
+             ConfirmBookingRequest request,
+@@ -34,7 +35,8 @@ public static class BookingEndpoints
+         {
+             var booking = await handler.HandleAsync(request.HoldId, user.GetUserId(), ct);
+             return Results.Created($"/bookings/{booking.BookingId}", booking);
+-        });
++        })
++        .RequireAuthorization(CanBookPolicy);
+ 
+         group.MapGet("/{bookingId:guid}", async (
+             Guid bookingId,
+@@ -55,7 +57,8 @@ public static class BookingEndpoints
+         {
+             var booking = await handler.HandleAsync(bookingId, user.GetUserId(), ct);
+             return Results.Ok(booking);
+-        });
++        })
++        .RequireAuthorization(CanBookPolicy);
+ 
+         return app;
+     }
+diff --git a/src/TravelBooking.API/Endpoints/FlightEndpoints.cs b/src/TravelBooking.API/Endpoints/FlightEndpoints.cs
+index aa9a546..9d05c8b 100644
+--- a/src/TravelBooking.API/Endpoints/FlightEndpoints.cs
++++ b/src/TravelBooking.API/Endpoints/FlightEndpoints.cs
+@@ -10,7 +10,7 @@ public static class FlightEndpoints
+ {
+     public static IEndpointRouteBuilder MapFlightEndpoints(this IEndpointRouteBuilder app)
+     {
+-        var group = app.MapGroup("/flights").WithTags("Flights");
++        var group = app.MapGroup("/flights").WithTags("Flights").RequireAuthorization();
+ 
+         group.MapGet("/", async (
+             string from,
+diff --git a/src/TravelBooking.Domain/Rules/OwnershipRule.cs b/src/TravelBooking.Domain/Rules/OwnershipRule.cs
+index 420df91..416519b 100644
+--- a/src/TravelBooking.Domain/Rules/OwnershipRule.cs
++++ b/src/TravelBooking.Domain/Rules/OwnershipRule.cs
+@@ -4,7 +4,7 @@ namespace TravelBooking.Domain.Rules;
+ 
+ public static class OwnershipRule
+ {
+-    public static bool Permits(string? owner, string? caller) => owner is null || caller is null || owner == caller;
++    public static bool Permits(string? owner, string? caller) => owner == caller;
+ 
+     public static void EnsurePermits(string? owner, string? caller, string action)
+     {
+diff --git a/src/TravelBooking.Host/HostBootstrap.cs b/src/TravelBooking.Host/HostBootstrap.cs
+index fd47678..1681582 100644
+--- a/src/TravelBooking.Host/HostBootstrap.cs
++++ b/src/TravelBooking.Host/HostBootstrap.cs
+@@ -25,7 +25,8 @@ internal static class HostBootstrap
+             {
+                 await seeder.ResetTransactionalDataAsync(ct);
+                 return Results.Ok(new { status = "reset", clearedTables = new[] { "bookings", "seat_holds", "audit_entries" } });
+-            });
++            })
++            .RequireAuthorization("CanBook");
+         }
+     }
+ 
+diff --git a/src/TravelBooking.Host/PassThroughAuthenticationHandler.cs b/src/TravelBooking.Host/PassThroughAuthenticationHandler.cs
+new file mode 100644
+index 0000000..2d95331
+--- /dev/null
++++ b/src/TravelBooking.Host/PassThroughAuthenticationHandler.cs
+@@ -0,0 +1,22 @@
++using System.Security.Claims;
++using System.Text.Encodings.Web;
++using Microsoft.AspNetCore.Authentication;
++using Microsoft.Extensions.Options;
++
++namespace TravelBooking.Host;
++
++internal sealed class PassThroughAuthenticationHandler(
++    IOptionsMonitor<AuthenticationSchemeOptions> options,
++    ILoggerFactory logger,
++    UrlEncoder encoder)
++    : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
++{
++    public const string SchemeName = "PassThrough";
++
++    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
++    {
++        var identity = new ClaimsIdentity(SchemeName);
++        var ticket = new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name);
++        return Task.FromResult(AuthenticateResult.Success(ticket));
++    }
++}
+diff --git a/src/TravelBooking.Host/Program.cs b/src/TravelBooking.Host/Program.cs
+index cb74372..426785d 100644
+--- a/src/TravelBooking.Host/Program.cs
++++ b/src/TravelBooking.Host/Program.cs
+@@ -1,5 +1,11 @@
++using Microsoft.AspNetCore.Authentication;
++using Microsoft.AspNetCore.Authentication.JwtBearer;
++using Microsoft.Extensions.Options;
+ using Microsoft.EntityFrameworkCore;
+ using ModelContextProtocol.AspNetCore;
++using ModelContextProtocol.AspNetCore.Authentication;
++using ModelContextProtocol.Authentication;
++using TravelBooking.API.Authorization;
+ using TravelBooking.API.Errors;
+ using TravelBooking.Application;
+ using TravelBooking.Host;
+@@ -39,9 +45,82 @@ builder.Services.AddCors(options =>
+     });
+ });
+ 
++var oauthAuthority = builder.Configuration["Authentication:Authority"];
++var mcpServerUrl = builder.Configuration["Authentication:ResourceUrl"] ?? "http://localhost:5197";
++
++if (!string.IsNullOrWhiteSpace(oauthAuthority))
++{
++    ProtectedResourceMetadata ResourceMetadataFor(string authorizationServer) => new()
++    {
++        Resource = mcpServerUrl,
++        AuthorizationServers = { authorizationServer },
++        ScopesSupported = ["mcp:tools", "booking:write"],
++    };
++
++    builder.Services.AddAuthentication(options =>
++    {
++        options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
++        options.DefaultChallengeScheme = McpAuthenticationDefaults.AuthenticationScheme;
++    })
++    .AddJwtBearer(options =>
++    {
++        options.Authority = oauthAuthority;
++        options.RequireHttpsMetadata = false; // dev: IdentityServer runs on plain http
++        options.TokenValidationParameters = new()
++        {
++            ValidateAudience = true,
++            ValidAudience = "travelbooking-mcp",
++        };
++    })
++    .AddMcp(options =>
++    {
++        options.ResourceMetadata = ResourceMetadataFor(oauthAuthority);
++
++        // The metadata document names the authorization server by its own issuer, not by
++        // the address this server fetches discovery from. A client refuses metadata whose
++        // `issuer` differs from the URL it asked for (RFC 8414 §3.3) -- Inspector does --
++        // and in a Codespace the identity provider's issuer is its browser-facing hostname
++        // while this server reaches it over loopback.
++        options.Events = new McpAuthenticationEvents
++        {
++            OnResourceMetadataRequest = async context =>
++            {
++                var jwtBearer = context.HttpContext.RequestServices
++                    .GetRequiredService<IOptionsMonitor<JwtBearerOptions>>()
++                    .Get(JwtBearerDefaults.AuthenticationScheme);
++                var discovery = await jwtBearer.ConfigurationManager!
++                    .GetConfigurationAsync(context.HttpContext.RequestAborted);
++
++                context.ResourceMetadata = ResourceMetadataFor(discovery.Issuer);
++            },
++        };
++    });
++
++    builder.Services.AddAuthorization(options =>
++    {
++        options.AddPolicy("CanBook", policy => policy.RequireAssertion(context =>
++            context.User.HasScope("booking:write")));
++    });
++}
++else
++{
++    // No identity provider configured: run open. A pass-through scheme keeps the
++    // [Authorize] attributes and RequireAuthorization() calls below working, so the
++    // code path is the same either way -- only the configuration differs.
++    builder.Services.AddAuthentication(PassThroughAuthenticationHandler.SchemeName)
++        .AddScheme<AuthenticationSchemeOptions, PassThroughAuthenticationHandler>(
++            PassThroughAuthenticationHandler.SchemeName, _ => { });
++
++    builder.Services.AddAuthorization(options =>
++    {
++        options.AddPolicy("CanBook", policy => policy.RequireAssertion(_ => true));
++    });
++}
++
+ builder.Services.AddMcpServer()
+     .WithHttpTransport(options =>
+         options.SessionMode = HttpServerSessionMode.StatefulForInitializeClients)
++    .AddAuthorizationFilters()
+     .WithToolsFromAssembly(typeof(FlightTools).Assembly)
+     .WithResourcesFromAssembly(typeof(FlightTools).Assembly)
+     .WithPromptsFromAssembly(typeof(FlightTools).Assembly);
+@@ -52,8 +131,16 @@ app.UseExceptionHandler();
+ 
+ app.UseCors();
+ 
++if (string.IsNullOrWhiteSpace(oauthAuthority))
++{
++    app.Logger.LogWarning("No Authentication:Authority configured — MCP endpoint is UNPROTECTED.");
++}
++
++app.UseAuthentication();
++app.UseAuthorization();
++
+ app.UseMcpRequestLogging("/mcp");
+-app.MapMcp("/mcp");
++app.MapMcp("/mcp").RequireAuthorization();
+ 
+ app.MapTravelBookingEndpoints();
+ 
+diff --git a/src/TravelBooking.Host/TravelBooking.Host.csproj b/src/TravelBooking.Host/TravelBooking.Host.csproj
+index 8cdfd57..4dfd9d8 100644
+--- a/src/TravelBooking.Host/TravelBooking.Host.csproj
++++ b/src/TravelBooking.Host/TravelBooking.Host.csproj
+@@ -9,6 +9,7 @@
+ 
+   <ItemGroup>
+     <PackageReference Include="Aspire.Npgsql.EntityFrameworkCore.PostgreSQL" />
++    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+     <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+     <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" />
+     <PackageReference Include="Microsoft.OpenApi" />
+diff --git a/src/TravelBooking.MCP/Prompts/BookFlightPrompt.cs b/src/TravelBooking.MCP/Prompts/BookFlightPrompt.cs
+index ec06d2a..35c14d1 100644
+--- a/src/TravelBooking.MCP/Prompts/BookFlightPrompt.cs
++++ b/src/TravelBooking.MCP/Prompts/BookFlightPrompt.cs
+@@ -1,4 +1,5 @@
+ using System.ComponentModel;
++using Microsoft.AspNetCore.Authorization;
+ using ModelContextProtocol.Protocol;
+ using ModelContextProtocol.Server;
+ using TravelBooking.MCP.Resources;
+@@ -10,6 +11,7 @@ namespace TravelBooking.MCP.Prompts;
+ /// drop into a conversation. It only returns messages. It never calls a tool, holds a seat
+ /// or creates a booking; the assistant does that, one tool at a time, with the user.
+ /// </summary>
++[Authorize]
+ [McpServerPromptType]
+ public static class BookFlightPrompt
+ {
+diff --git a/src/TravelBooking.MCP/Resources/BaggagePolicyResource.cs b/src/TravelBooking.MCP/Resources/BaggagePolicyResource.cs
+index 195d23b..00c9642 100644
+--- a/src/TravelBooking.MCP/Resources/BaggagePolicyResource.cs
++++ b/src/TravelBooking.MCP/Resources/BaggagePolicyResource.cs
+@@ -1,4 +1,5 @@
+ using System.ComponentModel;
++using Microsoft.AspNetCore.Authorization;
+ using ModelContextProtocol.Protocol;
+ using ModelContextProtocol.Server;
+ 
+@@ -8,6 +9,7 @@ namespace TravelBooking.MCP.Resources;
+ /// The one MCP <em>resource</em> of the workshop server: static reference text a client can
+ /// read and hand to the model as context. Tools do things; this just informs.
+ /// </summary>
++[Authorize]
+ [McpServerResourceType]
+ public static class BaggagePolicyResource
+ {
+diff --git a/src/TravelBooking.MCP/Tools/BookingTools.cs b/src/TravelBooking.MCP/Tools/BookingTools.cs
+index 4032a25..653436a 100644
+--- a/src/TravelBooking.MCP/Tools/BookingTools.cs
++++ b/src/TravelBooking.MCP/Tools/BookingTools.cs
+@@ -1,5 +1,7 @@
+ using System.ComponentModel;
+ using System.Diagnostics;
++using System.Security.Claims;
++using Microsoft.AspNetCore.Authorization;
+ using Microsoft.Extensions.Logging;
+ using ModelContextProtocol;
+ using ModelContextProtocol.Server;
+@@ -8,6 +10,7 @@ using TravelBooking.Domain;
+ 
+ namespace TravelBooking.MCP.Tools;
+ 
++[Authorize]
+ [McpServerToolType]
+ public class BookingTools(
+     HoldSeatHandler holdSeat,
+@@ -16,31 +19,31 @@ public class BookingTools(
+     CancelBookingHandler cancelBooking,
+     ILogger<BookingTools> logger)
+ {
++    [Authorize("CanBook")]
+     [McpServerTool(Name = "HoldSeat")]
+     [Description("Places a temporary hold on a specific seat of a flight. The hold expires " +
+         "after a few minutes; confirm it with ConfirmBooking before it expires. " +
+         "Returns the hold id and the exact UTC expiration time.")]
+     public async Task<HoldResult> HoldSeatAsync(
++        ClaimsPrincipal user,
+         [Description("The flight id returned by SearchFlights.")] Guid flightId,
+         [Description("The seat number to hold, e.g. '12A'. Must be one of the available " +
+             "seats returned by GetFlightDetails.")] string seatNumber,
+-        CancellationToken cancellationToken,
+-        [Description("A stable identifier for the customer making the booking, e.g. an " +
+-            "email address. Always pass the same value when retrying a failed call.")]
+-        string customerId = "")
++        CancellationToken cancellationToken)
+     {
++        var userId = user.FindFirst("preferred_username")?.Value
++            ?? user.FindFirst(ClaimTypes.NameIdentifier)?.Value;
++
+         using var activity = McpTelemetry.ActivitySource.StartActivity("tool HoldSeat");
+         activity?.SetTag("gen_ai.operation.name", "execute_tool");
+         activity?.SetTag("gen_ai.tool.name", "HoldSeat");
+         activity?.SetTag("travelbooking.flight_id", flightId);
+         activity?.SetTag("travelbooking.seat_number", seatNumber);
++        activity?.SetTag("enduser.id", userId);
+ 
+         try
+         {
+-            var hold = await holdSeat.HandleAsync(
+-                flightId, seatNumber,
+-                userId: string.IsNullOrWhiteSpace(customerId) ? null : customerId,
+-                cancellationToken);
++            var hold = await holdSeat.HandleAsync(flightId, seatNumber, userId, cancellationToken);
+             activity?.SetTag("travelbooking.hold_id", hold.HoldId);
+             activity?.SetTag("travelbooking.hold_expires_at", hold.ExpiresAtUtc.ToString("o"));
+             McpTelemetry.SeatsHeld.Add(1);
+@@ -55,21 +58,27 @@ public class BookingTools(
+         }
+     }
+ 
++    [Authorize("CanBook")]
+     [McpServerTool(Name = "ConfirmBooking")]
+     [Description("Confirms a seat hold and turns it into a booking. Fails if the hold has " +
+         "already expired. Returns the booking with its booking reference.")]
+     public async Task<BookingResult> ConfirmBookingAsync(
++        ClaimsPrincipal user,
+         [Description("The hold id returned by HoldSeat.")] Guid holdId,
+         CancellationToken cancellationToken)
+     {
++        var userId = user.FindFirst("preferred_username")?.Value
++            ?? user.FindFirst(ClaimTypes.NameIdentifier)?.Value;
++
+         using var activity = McpTelemetry.ActivitySource.StartActivity("tool ConfirmBooking");
+         activity?.SetTag("gen_ai.operation.name", "execute_tool");
+         activity?.SetTag("gen_ai.tool.name", "ConfirmBooking");
+         activity?.SetTag("travelbooking.hold_id", holdId);
++        activity?.SetTag("enduser.id", userId);
+ 
+         try
+         {
+-            var booking = await confirmBooking.HandleAsync(holdId, userId: null, cancellationToken);
++            var booking = await confirmBooking.HandleAsync(holdId, userId, cancellationToken);
+             McpTelemetry.BookingsConfirmed.Add(1);
+             logger.LogInformation("Booking {BookingReference} confirmed for hold {HoldId}",
+                 booking.BookingReference, holdId);
+@@ -94,21 +103,27 @@ public class BookingTools(
+         return await getBooking.HandleAsync(bookingId, cancellationToken);
+     }
+ 
++    [Authorize("CanBook")]
+     [McpServerTool(Name = "CancelBooking")]
+     [Description("Cancels an existing booking, freeing up its seat. Returns the cancelled " +
+         "booking. Fails if the booking is already cancelled.")]
+     public async Task<BookingResult> CancelBookingAsync(
++        ClaimsPrincipal user,
+         [Description("The booking id returned by ConfirmBooking.")] Guid bookingId,
+         CancellationToken cancellationToken)
+     {
++        var userId = user.FindFirst("preferred_username")?.Value
++            ?? user.FindFirst(ClaimTypes.NameIdentifier)?.Value;
++
+         using var activity = McpTelemetry.ActivitySource.StartActivity("tool CancelBooking");
+         activity?.SetTag("gen_ai.operation.name", "execute_tool");
+         activity?.SetTag("gen_ai.tool.name", "CancelBooking");
+         activity?.SetTag("travelbooking.booking_id", bookingId);
++        activity?.SetTag("enduser.id", userId);
+ 
+         try
+         {
+-            var booking = await cancelBooking.HandleAsync(bookingId, userId: null, cancellationToken);
++            var booking = await cancelBooking.HandleAsync(bookingId, userId, cancellationToken);
+             McpTelemetry.BookingsCancelled.Add(1);
+             return booking;
+         }
+diff --git a/src/TravelBooking.MCP/Tools/FlightTools.cs b/src/TravelBooking.MCP/Tools/FlightTools.cs
+index b9038ce..307278a 100644
+--- a/src/TravelBooking.MCP/Tools/FlightTools.cs
++++ b/src/TravelBooking.MCP/Tools/FlightTools.cs
+@@ -1,9 +1,11 @@
+ using System.ComponentModel;
++using Microsoft.AspNetCore.Authorization;
+ using ModelContextProtocol.Server;
+ using TravelBooking.Application.Handlers;
+ 
+ namespace TravelBooking.MCP.Tools;
+ 
++[Authorize]
+ [McpServerToolType]
+ public class FlightTools(
+     SearchFlightsHandler searchFlights,
+diff --git a/src/aspire/TravelBooking.AppHost/appsettings.json b/src/aspire/TravelBooking.AppHost/appsettings.json
+index 60cde71..df37c5d 100644
+--- a/src/aspire/TravelBooking.AppHost/appsettings.json
++++ b/src/aspire/TravelBooking.AppHost/appsettings.json
+@@ -1,5 +1,5 @@
+ {
+-  "UseIdentityServer": false,
++  "UseIdentityServer": true,
+   "Logging": {
+     "LogLevel": {
+       "Default": "Information",
+diff --git a/src/tests/TravelBooking.Tests/Api/ScopeClaimsTests.cs b/src/tests/TravelBooking.Tests/Api/ScopeClaimsTests.cs
+new file mode 100644
+index 0000000..c8894d2
+--- /dev/null
++++ b/src/tests/TravelBooking.Tests/Api/ScopeClaimsTests.cs
+@@ -0,0 +1,34 @@
++using System.Security.Claims;
++using TravelBooking.API.Authorization;
++
++namespace TravelBooking.Tests.Api;
++
++public class ScopeClaimsTests
++{
++    [Fact]
++    public void HasScope_looks_at_every_scope_claim_not_just_the_first()
++    {
++        var user = Principal(new Claim("scope", "mcp:tools"), new Claim("scope", "booking:write"));
++
++        user.HasScope("booking:write").Should().BeTrue("a JSON array in the token becomes one claim per scope");
++    }
++
++    [Fact]
++    public void HasScope_accepts_a_single_space_delimited_claim()
++    {
++        var user = Principal(new Claim("scope", "mcp:tools booking:write"));
++
++        user.HasScope("booking:write").Should().BeTrue();
++    }
++
++    [Fact]
++    public void HasScope_is_false_when_the_scope_was_not_granted()
++    {
++        var user = Principal(new Claim("scope", "mcp:tools"));
++
++        user.HasScope("booking:write").Should().BeFalse();
++    }
++
++    private static ClaimsPrincipal Principal(params Claim[] claims) =>
++        new(new ClaimsIdentity(claims, authenticationType: "test"));
++}
+diff --git a/src/tests/TravelBooking.Tests/Domain/OwnershipRuleTests.cs b/src/tests/TravelBooking.Tests/Domain/OwnershipRuleTests.cs
+new file mode 100644
+index 0000000..9962707
+--- /dev/null
++++ b/src/tests/TravelBooking.Tests/Domain/OwnershipRuleTests.cs
+@@ -0,0 +1,27 @@
++using TravelBooking.Domain;
++using TravelBooking.Domain.Rules;
++
++namespace TravelBooking.Tests.Domain;
++
++public class OwnershipRuleTests
++{
++    [Fact]
++    public void Owner_may_act_on_their_own_record() => OwnershipRule.Permits("alice", "alice").Should().BeTrue();
++
++    [Fact]
++    public void A_different_caller_may_not() => OwnershipRule.Permits("alice", "bob").Should().BeFalse();
++
++    [Fact]
++    public void An_anonymous_caller_may_not_act_on_an_owned_record() => OwnershipRule.Permits("alice", null).Should().BeFalse();
++
++    [Fact]
++    public void Two_anonymous_parties_are_treated_as_a_match() => OwnershipRule.Permits(null, null).Should().BeTrue();
++
++    [Fact]
++    public void EnsurePermits_names_the_action()
++    {
++        var act = () => OwnershipRule.EnsurePermits("alice", "bob", "confirm this hold");
++
++        act.Should().Throw<BookingDomainException>().WithMessage("Only the owner may confirm this hold.");
++    }
++}
+diff --git a/src/tests/TravelBooking.Tests/Mcp/McpServerPrimitivesTests.cs b/src/tests/TravelBooking.Tests/Mcp/McpServerPrimitivesTests.cs
+index 9dc63ad..a3cb8e7 100644
+--- a/src/tests/TravelBooking.Tests/Mcp/McpServerPrimitivesTests.cs
++++ b/src/tests/TravelBooking.Tests/Mcp/McpServerPrimitivesTests.cs
+@@ -7,6 +7,7 @@ using Moq;
+ using TravelBooking.Domain.Services;
+ using TravelBooking.MCP.Prompts;
+ using TravelBooking.MCP.Resources;
++using TravelBooking.MCP.Tools;
+ using TravelBooking.Tests.TestHelpers;
+ 
+ namespace TravelBooking.Tests.Mcp;
+@@ -131,4 +132,48 @@ public class McpServerPrimitivesTests
+         tools.Select(t => t.Name).Should().BeEquivalentTo(
+             "SearchFlights", "GetFlightDetails", "HoldSeat", "ConfirmBooking", "GetBooking", "CancelBooking");
+     }
++
++    [Fact]
++    public void BaggagePolicyResource_requires_an_authenticated_caller()
++    {
++        var resource = McpServerResource.Create(
++            typeof(BaggagePolicyResource).GetMethod(nameof(BaggagePolicyResource.Read))!, target: null);
++
++        resource.Metadata.OfType<AuthorizeAttribute>().Should().ContainSingle()
++            .Which.Policy.Should().BeNull("reading the policy needs an identity, not booking:write");
++    }
++
++    [Fact]
++    public void BookFlightPrompt_requires_an_authenticated_caller()
++    {
++        var prompt = McpServerPrompt.Create(
++            typeof(BookFlightPrompt).GetMethod(nameof(BookFlightPrompt.Create))!, target: null);
++
++        prompt.Metadata.OfType<AuthorizeAttribute>().Should().ContainSingle()
++            .Which.Policy.Should().BeNull();
++    }
++
++    [Theory]
++    [InlineData(typeof(FlightTools), nameof(FlightTools.SearchFlightsAsync))]
++    [InlineData(typeof(FlightTools), nameof(FlightTools.GetFlightDetailsAsync))]
++    [InlineData(typeof(BookingTools), nameof(BookingTools.GetBookingAsync))]
++    public void Read_only_tools_require_an_authenticated_caller(Type toolType, string method)
++    {
++        var tool = McpServerTool.Create(toolType.GetMethod(method)!, _ => throw new InvalidOperationException("not invoked"));
++
++        tool.Metadata.OfType<AuthorizeAttribute>().Should().ContainSingle()
++            .Which.Policy.Should().BeNull("searching and reading need an identity, not booking:write");
++    }
++
++    [Theory]
++    [InlineData(nameof(BookingTools.HoldSeatAsync))]
++    [InlineData(nameof(BookingTools.ConfirmBookingAsync))]
++    [InlineData(nameof(BookingTools.CancelBookingAsync))]
++    public void Tools_that_change_state_also_require_the_booking_scope(string method)
++    {
++        var tool = McpServerTool.Create(typeof(BookingTools).GetMethod(method)!, _ => throw new InvalidOperationException("not invoked"));
++
++        tool.Metadata.OfType<AuthorizeAttribute>().Select(a => a.Policy)
++            .Should().BeEquivalentTo(new string?[] { null, "CanBook" }, "the class demands an identity and the method adds booking:write");
++    }
+ }

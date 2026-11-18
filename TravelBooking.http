@@ -1,0 +1,94 @@
+### Travel Booking — REST API + Token
+### Works when Aspire is running: dotnet run --project src/aspire/TravelBooking.AppHost
+###
+### Variables — adjust if your ports differ
+@host = http://localhost:5197
+@idp  = http://localhost:5001
+
+# ─────────────────────────────────────────────
+# 1. Get an access token from IdentityServer
+#
+#    There is no request for this, on purpose: the
+#    only grant this IdP allows is authorization
+#    code + PKCE, which needs a browser. The
+#    resource owner password grant is removed in
+#    OAuth 2.1 and is no longer enabled here.
+#
+#    Open {{idp}}/Token, sign in as alice/alice123,
+#    grant the scopes you want, and paste the token
+#    it gives you into @token below.
+# ─────────────────────────────────────────────
+
+@token = paste-your-token-here
+
+
+# ─────────────────────────────────────────────
+# FLIGHTS
+# ─────────────────────────────────────────────
+
+### Search flights  AMS → LHR
+GET {{host}}/flights?from=AMS&to=LHR&date=2026-12-01
+Authorization: Bearer {{token}}
+
+###
+# After SearchFlights: paste a returned flight id here:
+@flightId = 00000000-0000-0000-0000-000000000000
+
+### Get flight details
+GET {{host}}/flights/{{flightId}}
+Authorization: Bearer {{token}}
+
+
+# ─────────────────────────────────────────────
+# BOOKINGS
+# ─────────────────────────────────────────────
+
+###
+# After GetFlightDetails: paste an available seat here:
+@seatNumber = 12A
+
+### Hold a seat
+# @name holdResponse
+POST {{host}}/bookings/hold
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "flightId": "{{flightId}}",
+  "seatNumber": "{{seatNumber}}"
+}
+
+###
+@holdId = {{holdResponse.response.body.holdId}}
+
+### Confirm booking
+# @name confirmResponse
+POST {{host}}/bookings/confirm
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "holdId": "{{holdId}}"
+}
+
+###
+@bookingId = {{confirmResponse.response.body.bookingId}}
+
+### Get booking
+GET {{host}}/bookings/{{bookingId}}
+Authorization: Bearer {{token}}
+
+### Cancel booking
+DELETE {{host}}/bookings/{{bookingId}}
+Authorization: Bearer {{token}}
+
+
+# ─────────────────────────────────────────────
+# ADMIN
+# ─────────────────────────────────────────────
+
+### Reset transactional data (no auth required)
+POST {{host}}/admin/reset-data
+
+### Health check (no auth required)
+GET {{host}}/health

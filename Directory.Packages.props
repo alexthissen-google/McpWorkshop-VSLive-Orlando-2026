@@ -1,0 +1,69 @@
+<Project>
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+    <AspnetVersion>11.0.0</AspnetVersion>
+    <DotnetPackagesVersion>11.0.0</DotnetPackagesVersion>
+    <MicrosoftExtensionsVersion>11.0.0</MicrosoftExtensionsVersion>
+    <!-- EF Core stays on 10.x until Npgsql.EntityFrameworkCore.PostgreSQL 11 is stable. -->
+    <EfCoreVersion>10.0.14</EfCoreVersion>
+    <OpenTelemetryVersion>1.20.1</OpenTelemetryVersion>
+  </PropertyGroup>
+
+  <ItemGroup Label="Aspire">
+    <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="13.6.5" />
+    <PackageVersion Include="Aspire.Npgsql.EntityFrameworkCore.PostgreSQL" Version="13.6.5" />
+    <PackageVersion Include="Scalar.Aspire" Version="0.12.7" />
+  </ItemGroup>
+
+  <ItemGroup Label="ASP.NET Core">
+    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="$(AspnetVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.ApiDescription.Server" Version="$(AspnetVersion)" />
+    <PackageVersion Include="Microsoft.OpenApi" Version="3.11.0" />
+    <PackageVersion Include="Scalar.AspNetCore" Version="2.18.7" />
+  </ItemGroup>
+  <!-- Same namespace, two release trains: packages from dotnet/runtime are serviced with the
+       runtime (11.0.x); packages from dotnet/extensions ship monthly on their own numbers (11.<month>.0). -->
+  <ItemGroup Label="Microsoft.Extensions">
+    <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="$(DotnetPackagesVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.ServiceDiscovery" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="$(MicrosoftExtensionsVersion)" />
+  </ItemGroup>
+
+  <ItemGroup Label="EF Core / PostgreSQL">
+    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="$(EfCoreVersion)" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="$(EfCoreVersion)" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="$(EfCoreVersion)" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="$(EfCoreVersion)" />
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup Label="Authentication">
+    <PackageVersion Include="Duende.IdentityServer" Version="8.0.10" />
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="$(AspnetVersion)" />
+    <PackageVersion Include="Microsoft.AspNetCore.Authorization" Version="$(AspnetVersion)" />
+  </ItemGroup>
+
+  <ItemGroup Label="MCP">
+    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="2.3.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="OpenTelemetry">
+    <PackageVersion Include="Azure.Monitor.OpenTelemetry.AspNetCore" Version="1.6.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="$(OpenTelemetryVersion)" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="$(OpenTelemetryVersion)" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="$(OpenTelemetryVersion)" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="$(OpenTelemetryVersion)" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="$(OpenTelemetryVersion)" />
+  </ItemGroup>
+
+  <ItemGroup Label="Testing">
+    <PackageVersion Include="AwesomeAssertions" Version="9.6.0" />
+    <PackageVersion Include="Moq" Version="4.21.0" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.16.0" />
+    <PackageVersion Include="xunit.v3" Version="4.0.2" />
+  </ItemGroup>
+
+</Project>

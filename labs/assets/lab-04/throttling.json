@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/dotnet/dev-proxy/main/schemas/v3.3.1/rc.schema.json",
+  "plugins": [
+    {
+      "name": "RetryAfterPlugin",
+      "enabled": true,
+      "pluginPath": "~appFolder/plugins/DevProxy.Plugins.dll"
+    },
+    {
+      "name": "GenericRandomErrorPlugin",
+      "enabled": true,
+      "pluginPath": "~appFolder/plugins/DevProxy.Plugins.dll",
+      "configSection": "errorsTravelBooking"
+    }
+  ],
+  "urlsToWatch": [
+    "http://localhost:5197/*"
+  ],
+  "errorsTravelBooking": {
+    "$schema": "https://raw.githubusercontent.com/dotnet/dev-proxy/main/schemas/v3.3.1/genericrandomerrorplugin.schema.json",
+    "errorsFile": "errors-travelbooking.json",
+    "rate": 50
+  }
+}

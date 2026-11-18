@@ -1,0 +1,18 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TravelBooking.API/TravelBooking.API.csproj" />
+    <Project Path="src/TravelBooking.Application/TravelBooking.Application.csproj" />
+    <Project Path="src/TravelBooking.Domain/TravelBooking.Domain.csproj" />
+    <Project Path="src/TravelBooking.Host/TravelBooking.Host.csproj" />
+    <Project Path="src/TravelBooking.IdentityServer/TravelBooking.IdentityServer.csproj" />
+    <Project Path="src/TravelBooking.Infrastructure/TravelBooking.Infrastructure.csproj" />
+    <Project Path="src/TravelBooking.MCP/TravelBooking.MCP.csproj" />
+  </Folder>
+  <Folder Name="/src/aspire/">
+    <Project Path="src/aspire/TravelBooking.AppHost/TravelBooking.AppHost.csproj" />
+    <Project Path="src/aspire/TravelBooking.ServiceDefaults/TravelBooking.ServiceDefaults.csproj" />
+  </Folder>
+  <Folder Name="/src/tests/">
+    <Project Path="src/tests/TravelBooking.Tests/TravelBooking.Tests.csproj" />
+  </Folder>
+</Solution>

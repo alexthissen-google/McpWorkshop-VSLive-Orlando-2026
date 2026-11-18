@@ -1,0 +1,239 @@
+diff --git a/src/TravelBooking.Domain/Models/Flight.cs b/src/TravelBooking.Domain/Models/Flight.cs
+index 0319c29..ddb4ed9 100644
+--- a/src/TravelBooking.Domain/Models/Flight.cs
++++ b/src/TravelBooking.Domain/Models/Flight.cs
+@@ -134,6 +134,13 @@ public class Flight
+         var activeHold = occupancy.Holds.FirstOrDefault(h => h.SeatNumber == seatNumber && h.IsActive(nowUtc));
+         if (activeHold is not null)
+         {
++            // Idempotency: the same caller re-requesting the same seat gets the same hold
++            // back, instead of a conflict. Retries become safe.
++            if (activeHold.IsOwnedBy(userId))
++            {
++                return new HoldSeatResult(activeHold, Created: false);
++            }
++
+             throw new BookingDomainException($"Seat {seatNumber} is currently held.");
+         }
+ 
+diff --git a/src/TravelBooking.Domain/Models/SeatHold.cs b/src/TravelBooking.Domain/Models/SeatHold.cs
+index fc91c36..e467542 100644
+--- a/src/TravelBooking.Domain/Models/SeatHold.cs
++++ b/src/TravelBooking.Domain/Models/SeatHold.cs
+@@ -42,6 +42,14 @@ public class SeatHold
+ 
+     public ConfirmResult Confirm(string? userId, DateTime nowUtc, string bookingReference)
+     {
++        // Idempotency: the owner confirming an already-confirmed hold gets the booking that
++        // confirmation created, instead of a conflict. Retries become safe.
++        if (Status == HoldStatus.Confirmed && ConfirmedAsBooking is not null)
++        {
++            OwnershipRule.EnsurePermits(UserId, userId, "confirm this hold");
++            return new ConfirmResult(ConfirmedAsBooking, Created: false);
++        }
++
+         if (Status != HoldStatus.Active)
+         {
+             throw new BookingDomainException($"Hold {Id} is not active (status: {Status}).");
+diff --git a/src/TravelBooking.Host/Program.cs b/src/TravelBooking.Host/Program.cs
+index d0a1c15..cb74372 100644
+--- a/src/TravelBooking.Host/Program.cs
++++ b/src/TravelBooking.Host/Program.cs
+@@ -1,3 +1,4 @@
++using Microsoft.EntityFrameworkCore;
+ using ModelContextProtocol.AspNetCore;
+ using TravelBooking.API.Errors;
+ using TravelBooking.Application;
+@@ -11,7 +12,13 @@ var builder = WebApplication.CreateBuilder(args);
+ 
+ builder.AddServiceDefaults();
+ 
+-builder.AddNpgsqlDbContext<TravelBookingDbContext>(connectionName: "travelbookingdb");
++builder.AddNpgsqlDbContext<TravelBookingDbContext>(
++    connectionName: "travelbookingdb",
++    configureDbContextOptions: options => options.UseNpgsql(npgsql =>
++        npgsql.EnableRetryOnFailure(
++            maxRetryCount: 5,
++            maxRetryDelay: TimeSpan.FromSeconds(10),
++            errorCodesToAdd: null)));
+ 
+ builder.Services.AddTravelBookingApplication();
+ builder.Services.AddTravelBookingInfrastructure(builder.Configuration);
+diff --git a/src/TravelBooking.Host/appsettings.Development.json b/src/TravelBooking.Host/appsettings.Development.json
+index 0c208ae..7708bb1 100644
+--- a/src/TravelBooking.Host/appsettings.Development.json
++++ b/src/TravelBooking.Host/appsettings.Development.json
+@@ -4,5 +4,8 @@
+       "Default": "Information",
+       "Microsoft.AspNetCore": "Warning"
+     }
++  },
++  "BookingOptions": {
++    "SeatHoldDurationMinutes": 1
+   }
+ }
+diff --git a/src/TravelBooking.Infrastructure/Services/BookingService.cs b/src/TravelBooking.Infrastructure/Services/BookingService.cs
+index 3334dc1..f76b0ce 100644
+--- a/src/TravelBooking.Infrastructure/Services/BookingService.cs
++++ b/src/TravelBooking.Infrastructure/Services/BookingService.cs
+@@ -58,11 +58,20 @@ public class BookingService(
+         string? userId,
+         CancellationToken cancellationToken)
+     {
+-        var hold = await db.SeatHolds.FirstOrDefaultAsync(h => h.Id == holdId, cancellationToken)
++        // Load the booking an earlier confirm may have created, so the domain can hand it back.
++        var hold = await db.SeatHolds
++            .Include(h => h.ConfirmedAsBooking)
++            .FirstOrDefaultAsync(h => h.Id == holdId, cancellationToken)
+             ?? throw new BookingDomainException($"Hold {holdId} not found.");
+ 
+         var now = clock.GetUtcNow().UtcDateTime;
+-        var booking = hold.Confirm(userId, now, BookingReference.Generate()).Booking;
++        var result = hold.Confirm(userId, now, BookingReference.Generate());
++        var booking = result.Booking;
++        if (!result.Created)
++        {
++            return booking;
++        }
++
+         db.Bookings.Add(booking);
+ 
+         for (int attempt = 1; attempt <= BookingReferenceRetryAttempts; attempt++)
+diff --git a/src/TravelBooking.MCP/Tools/BookingTools.cs b/src/TravelBooking.MCP/Tools/BookingTools.cs
+index 60f1a02..4032a25 100644
+--- a/src/TravelBooking.MCP/Tools/BookingTools.cs
++++ b/src/TravelBooking.MCP/Tools/BookingTools.cs
+@@ -24,7 +24,10 @@ public class BookingTools(
+         [Description("The flight id returned by SearchFlights.")] Guid flightId,
+         [Description("The seat number to hold, e.g. '12A'. Must be one of the available " +
+             "seats returned by GetFlightDetails.")] string seatNumber,
+-        CancellationToken cancellationToken)
++        CancellationToken cancellationToken,
++        [Description("A stable identifier for the customer making the booking, e.g. an " +
++            "email address. Always pass the same value when retrying a failed call.")]
++        string customerId = "")
+     {
+         using var activity = McpTelemetry.ActivitySource.StartActivity("tool HoldSeat");
+         activity?.SetTag("gen_ai.operation.name", "execute_tool");
+@@ -34,7 +37,10 @@ public class BookingTools(
+ 
+         try
+         {
+-            var hold = await holdSeat.HandleAsync(flightId, seatNumber, userId: null, cancellationToken);
++            var hold = await holdSeat.HandleAsync(
++                flightId, seatNumber,
++                userId: string.IsNullOrWhiteSpace(customerId) ? null : customerId,
++                cancellationToken);
+             activity?.SetTag("travelbooking.hold_id", hold.HoldId);
+             activity?.SetTag("travelbooking.hold_expires_at", hold.ExpiresAtUtc.ToString("o"));
+             McpTelemetry.SeatsHeld.Add(1);
+diff --git a/src/tests/TravelBooking.Tests/Domain/FlightTests.cs b/src/tests/TravelBooking.Tests/Domain/FlightTests.cs
+index 1b9da0e..32f6632 100644
+--- a/src/tests/TravelBooking.Tests/Domain/FlightTests.cs
++++ b/src/tests/TravelBooking.Tests/Domain/FlightTests.cs
+@@ -275,4 +275,17 @@ public class FlightTests
+ 
+         flight.AvailableSeats(FlightOccupancy.Empty, Dep).Should().BeEmpty();
+     }
++
++    [Fact]
++    public void HoldSeat_returns_existing_hold_for_same_named_caller()
++    {
++        var flight = NewFlight();
++        var first = flight.HoldSeat("1A", "alice", Now, Policy, FlightOccupancy.Empty).Hold;
++
++        var retry = flight.HoldSeat("1A", "alice", Now, Policy, new FlightOccupancy([first], []));
++
++        using var _ = new AssertionScope();
++        retry.Created.Should().BeFalse();
++        retry.Hold.Should().BeSameAs(first);
++    }
+ }
+diff --git a/src/tests/TravelBooking.Tests/Domain/SeatHoldTests.cs b/src/tests/TravelBooking.Tests/Domain/SeatHoldTests.cs
+index 505db57..3e2eb77 100644
+--- a/src/tests/TravelBooking.Tests/Domain/SeatHoldTests.cs
++++ b/src/tests/TravelBooking.Tests/Domain/SeatHoldTests.cs
+@@ -87,13 +87,37 @@ public class SeatHoldTests
+     public void Confirm_rejects_hold_that_is_not_active()
+     {
+         var hold = NewHold("alice");
+-        hold.Confirm("alice", Now.AddMinutes(1), "BKG-TEST01");
++        hold.MarkExpired(hold.ExpiresAtUtc);
+ 
+-        var act = () => hold.Confirm("alice", Now.AddMinutes(2), "BKG-TEST02");
++        var act = () => hold.Confirm("alice", Now.AddMinutes(1), "BKG-TEST01");
+ 
+         act.Should().Throw<BookingDomainException>().WithMessage("*not active*");
+     }
+ 
++    [Fact]
++    public void Confirm_returns_the_existing_booking_when_the_owner_confirms_again()
++    {
++        var hold = NewHold("alice");
++        var first = hold.Confirm("alice", Now.AddMinutes(1), "BKG-TEST01");
++
++        var retry = hold.Confirm("alice", Now.AddMinutes(2), "BKG-TEST02");
++
++        using var _ = new AssertionScope();
++        retry.Created.Should().BeFalse();
++        retry.Booking.Should().BeSameAs(first.Booking);
++    }
++
++    [Fact]
++    public void Confirm_rejects_a_different_caller_confirming_again()
++    {
++        var hold = NewHold("alice");
++        hold.Confirm("alice", Now.AddMinutes(1), "BKG-TEST01");
++
++        var act = () => hold.Confirm("bob", Now.AddMinutes(2), "BKG-TEST02");
++
++        act.Should().Throw<BookingDomainException>().WithMessage("Only the owner may confirm this hold.");
++    }
++
+     [Fact]
+     public void Confirm_rejects_a_different_named_caller()
+     {
+diff --git a/src/tests/TravelBooking.Tests/Infrastructure/BookingServiceTests.cs b/src/tests/TravelBooking.Tests/Infrastructure/BookingServiceTests.cs
+index 40ea29b..9bd7a6e 100644
+--- a/src/tests/TravelBooking.Tests/Infrastructure/BookingServiceTests.cs
++++ b/src/tests/TravelBooking.Tests/Infrastructure/BookingServiceTests.cs
+@@ -261,4 +261,39 @@ public class BookingServiceTests
+ 
+         await act.Should().ThrowAsync<BookingDomainException>().WithMessage("*departed*");
+     }
++
++    [Fact]
++    public async Task HoldSeat_returns_same_hold_when_same_user_retries()
++    {
++        var (svc, _, _, flight) = Setup();
++
++        var first = await svc.HoldSeatAsync(flight.Id, "1A", userId: "user-42", CancellationToken.None);
++        var retry = await svc.HoldSeatAsync(flight.Id, "1A", userId: "user-42", CancellationToken.None);
++
++        retry.Id.Should().Be(first.Id);
++    }
++
++    [Fact]
++    public async Task HoldSeat_still_rejects_different_user_for_held_seat()
++    {
++        var (svc, _, _, flight) = Setup();
++
++        await svc.HoldSeatAsync(flight.Id, "1A", userId: "user-42", CancellationToken.None);
++        var act = async () => await svc.HoldSeatAsync(flight.Id, "1A", userId: "user-43", CancellationToken.None);
++
++        await act.Should().ThrowAsync<BookingDomainException>();
++    }
++
++    [Fact]
++    public async Task ConfirmBooking_returns_same_booking_when_retried()
++    {
++        var (svc, _, _, flight) = Setup();
++        var hold = await svc.HoldSeatAsync(flight.Id, "1A", userId: null, CancellationToken.None);
++
++        var first = await svc.ConfirmBookingAsync(hold.Id, userId: null, CancellationToken.None);
++        var retry = await svc.ConfirmBookingAsync(hold.Id, userId: null, CancellationToken.None);
++
++        retry.Id.Should().Be(first.Id);
++        retry.BookingReference.Should().Be(first.BookingReference);
++    }
+ }

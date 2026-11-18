@@ -1,0 +1,154 @@
+@page "{handler?}"
+@model TravelBooking.IdentityServer.Pages.Token.Index
+
+<div class="token-page">
+    <div class="lead">
+        <h1>Get an access token</h1>
+        <p>Authorization code flow with PKCE, against this identity provider.</p>
+    </div>
+
+    @if (Model.Error != null)
+    {
+        <div class="alert alert-danger">
+            <strong>@Model.Error</strong>
+            @if (Model.ErrorDescription != null)
+            {
+                <pre class="mb-0">@Model.ErrorDescription</pre>
+            }
+        </div>
+    }
+
+    @if (Model.Result is null)
+    {
+        <div class="row">
+            <div class="col-lg-7">
+                <div class="card">
+                    <div class="card-header"><h2>Request a token</h2></div>
+                    <div class="card-body">
+                        <form method="post" asp-page="/Token/Index">
+                            <p>
+                                <code>openid</code> and <code>profile</code> are always requested.
+                                Pick the API scopes you want to ask for:
+                            </p>
+
+                            <div class="form-check">
+                                <input class="form-check-input" asp-for="RequestMcpTools" />
+                                <label class="form-check-label" asp-for="RequestMcpTools">
+                                    <code>mcp:tools</code> &mdash; list and call the MCP tools
+                                </label>
+                            </div>
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" asp-for="RequestBookingWrite" />
+                                <label class="form-check-label" asp-for="RequestBookingWrite">
+                                    <code>booking:write</code> &mdash; hold, confirm and cancel bookings
+                                </label>
+                            </div>
+
+                            <button class="btn btn-primary" type="submit">Sign in and get a token</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-5">
+                <div class="card">
+                    <div class="card-header"><h2>What is about to happen</h2></div>
+                    <div class="card-body">
+                        <ol>
+                            <li>This page generates a PKCE <code>code_verifier</code> and sends its SHA-256 hash to <code>/connect/authorize</code>.</li>
+                            <li>You sign in as <code>alice</code> / <code>alice123</code>.</li>
+                            <li>You decide on the consent screen which of the scopes you asked for are actually granted.</li>
+                            <li>You come back here with a one-time code.</li>
+                            <li>This page redeems the code at <code>/connect/token</code>, presenting the verifier.</li>
+                        </ol>
+                        <p class="text-muted mb-0">
+                            Exactly the five steps MCP Inspector and VS Code perform for you.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="alert alert-success">
+            Token issued. Valid for <strong>@TimeSpan.FromSeconds(Model.Result.ExpiresIn).TotalHours.ToString("0.#")</strong>
+            hours (<code>@Model.Result.ExpiresIn</code> seconds).
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header"><h2>Granted scopes</h2></div>
+            <div class="card-body">
+                <p>
+                    @foreach (var scope in Model.Result.GrantedScopes)
+                    {
+                        <span class="badge badge-success mr-1">@scope</span>
+                    }
+                </p>
+                @if (Model.Result.DeniedScopes.Any())
+                {
+                    <p class="mb-0">
+                        Requested but <strong>not</strong> granted:
+                        @foreach (var scope in Model.Result.DeniedScopes)
+                        {
+                            <span class="badge badge-warning mr-1">@scope</span>
+                        }
+                    </p>
+                }
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header"><h2>Access token</h2></div>
+            <div class="card-body">
+                <label for="access-token" class="sr-only">Access token</label>
+                <textarea id="access-token" class="form-control" rows="6" readonly>@Model.Result.AccessToken</textarea>
+                <button class="btn btn-primary mt-2" type="button" id="copy-token">Copy token</button>
+                <span id="copy-feedback" class="text-muted ml-2" role="status" aria-live="polite"></span>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header"><h2>Use it</h2></div>
+            <div class="card-body">
+                <p><strong>MCP Inspector</strong> &mdash; paste it into Authentication &rarr; Bearer Token.</p>
+                <p class="mb-1"><strong>Shell</strong> &mdash; copy the token, then:</p>
+                <pre>export TOKEN='&lt;paste&gt;'
+
+curl -s -i @(Model.McpServerUrl ?? "http://localhost:5197")/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'</pre>
+                <p class="mb-1"><strong>Azure AI Foundry agent</strong>:</p>
+                <pre>./infra/attendee/deploy.sh \
+  --mcp-url "@(Model.McpServerUrl ?? "https://${CODESPACE_NAME}-5197.app.github.dev")/mcp" \
+  --mcp-token "$TOKEN" --approval never</pre>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-lg-6">
+                <div class="card mb-3">
+                    <div class="card-header"><h2>Header</h2></div>
+                    <div class="card-body"><pre class="mb-0">@Model.Result.Header</pre></div>
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="card mb-3">
+                    <div class="card-header"><h2>Payload</h2></div>
+                    <div class="card-body"><pre class="mb-0">@Model.Result.Payload</pre></div>
+                </div>
+            </div>
+        </div>
+
+        <p>
+            <a class="btn btn-secondary" asp-page="/Token/Index">Get another token</a>
+            <a class="btn btn-outline-secondary" asp-page="/Account/Logout/Index">Sign out</a>
+        </p>
+    }
+</div>
+
+@section scripts
+{
+    <script src="~/js/copy-token.js"></script>
+}

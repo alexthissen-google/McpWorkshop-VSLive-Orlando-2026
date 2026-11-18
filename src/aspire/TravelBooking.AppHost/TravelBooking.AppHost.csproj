@@ -1,0 +1,23 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.6.5">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\TravelBooking.Host\TravelBooking.Host.csproj" />
+    <ProjectReference Include="..\..\TravelBooking.IdentityServer\TravelBooking.IdentityServer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" />
+    <PackageReference Include="Scalar.Aspire" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UserSecretsId>c37a828d-bc73-4e19-9c6f-4bc171502639</UserSecretsId>
+    <AspireUseCliBundle>true</AspireUseCliBundle>
+    <!-- dotnet run resolves the Aspire CLI pinned to this AppHost SDK version via dnx, so CLI and SDK never drift apart. -->
+    <AspireCliInvocationMode>DnxPinned</AspireCliInvocationMode>
+  </PropertyGroup>
+</Project>

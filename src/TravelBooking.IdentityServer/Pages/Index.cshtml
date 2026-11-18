@@ -1,0 +1,44 @@
+@page
+@model TravelBooking.IdentityServer.Pages.Home.Index
+
+<div class="welcome-page">
+    <h1>
+        <img src="~/duende-logo.svg" class="logo" alt="">
+        Travel Booking identity provider
+        <small class="text-muted">Duende IdentityServer @Model.Version</small>
+    </h1>
+
+    <p class="lead">
+        This is the workshop's authorization server. It issues the access tokens that the
+        Travel Booking MCP server validates.
+    </p>
+
+    <ul>
+        <li>
+            <a asp-page="/Token/Index"><strong>Get an access token</strong></a> &mdash; runs a real
+            authorization code + PKCE flow and shows you the token it gets back. This is what
+            Lab 5 uses.
+        </li>
+        <li>
+            IdentityServer publishes a
+            <a href="~/.well-known/openid-configuration">discovery document</a>
+            where you can find metadata and links to all the endpoints, key material, etc.
+        </li>
+        <li>
+            Clients, scopes, resources and the test user are configured in plain C# in
+            <code>src/TravelBooking.IdentityServer/Config.cs</code>. There is no admin UI
+            &mdash; configuration is code.
+        </li>
+    </ul>
+
+    @if (Model.License?.IsConfigured == true)
+    {
+        <h2>License</h2>
+        <dl>
+            <dt>Serial Number</dt>
+            <dd>@Model.License.SerialNumber</dd>
+            <dt>Expiration</dt>
+            <dd>@(Model.License.Expiration.HasValue ? Model.License.Expiration.Value.DateTime.ToLongDateString() : "Never")</dd>
+        </dl>
+    }
+</div>

@@ -1,0 +1,66 @@
+diff --git a/src/aspire/TravelBooking.AppHost/AppHost.cs b/src/aspire/TravelBooking.AppHost/AppHost.cs
+index cce5589..ceb67ce 100644
+--- a/src/aspire/TravelBooking.AppHost/AppHost.cs
++++ b/src/aspire/TravelBooking.AppHost/AppHost.cs
+@@ -34,7 +34,9 @@ var travelBookingDb = postgres.AddDatabase("travelbookingdb");
+ // world it is describing (`aspire run` versus `azd up`), so it decides here, once.
+ var publishedScheme = builder.ExecutionContext.IsPublishMode ? "https" : "http";
+ 
+-var identityServer = builder.AddProject<Projects.TravelBooking_IdentityServer>("identity-server");
++var identityServer = builder
++    .AddProject<Projects.TravelBooking_IdentityServer>("identity-server")
++    .WithExternalHttpEndpoints();
+ 
+ // Tell IdentityServer the origin it is published on, which it cannot work out for itself:
+ // Aspire proxies project endpoints, so the process binds a port Aspire picked while the browser
+@@ -56,6 +58,7 @@ identityServer.WithEnvironment("IdentityServer__PublicOrigin", identityServerUrl
+ var useIdentityServer = builder.Configuration.GetValue("UseIdentityServer", false);
+ 
+ var travelBookingHost = builder.AddProject<Projects.TravelBooking_Host>("travelbooking-host")
++    .WithExternalHttpEndpoints()
+     .WithReference(travelBookingDb)
+     .WaitFor(travelBookingDb)
+     .WaitFor(identityServer)
+diff --git a/src/aspire/TravelBooking.ServiceDefaults/Extensions.cs b/src/aspire/TravelBooking.ServiceDefaults/Extensions.cs
+index 28934e0..fbc4475 100644
+--- a/src/aspire/TravelBooking.ServiceDefaults/Extensions.cs
++++ b/src/aspire/TravelBooking.ServiceDefaults/Extensions.cs
+@@ -139,23 +139,23 @@ public static class Extensions
+ 
+     public static WebApplication MapDefaultEndpoints(this WebApplication app)
+     {
+-        // Adding health checks endpoints to applications in non-development environments has security implications.
+-        // See https://aka.ms/dotnet/aspire/healthchecks for details before enabling these endpoints in non-development environments.
+-        if (app.Environment.IsDevelopment())
++        // Health endpoints are deliberately exposed in all environments for this workshop:
++        // Azure Container Apps uses them as liveness/readiness probes. In a real system,
++        // consider exposing them on an internal port or protecting them — see
++        // https://aka.ms/dotnet/aspire/healthchecks for the trade-offs.
++
++        // All health checks must pass for app to be considered ready to accept traffic after starting
++        app.MapHealthChecks(HealthEndpointPath, new HealthCheckOptions
+         {
+-            // All health checks must pass for app to be considered ready to accept traffic after starting
+-            app.MapHealthChecks(HealthEndpointPath, new HealthCheckOptions
+-            {
+-                ResponseWriter = WriteHealthStatus
+-            });
++            ResponseWriter = WriteHealthStatus
++        });
+ 
+-            // Only health checks tagged with the "live" tag must pass for app to be considered alive
+-            app.MapHealthChecks(AlivenessEndpointPath, new HealthCheckOptions
+-            {
+-                Predicate = r => r.Tags.Contains("live"),
+-                ResponseWriter = WriteHealthStatus
+-            });
+-        }
++        // Only health checks tagged with the "live" tag must pass for app to be considered alive
++        app.MapHealthChecks(AlivenessEndpointPath, new HealthCheckOptions
++        {
++            Predicate = r => r.Tags.Contains("live"),
++            ResponseWriter = WriteHealthStatus
++        });
+ 
+         return app;
+     }
